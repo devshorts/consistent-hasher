@@ -50,8 +50,58 @@ class ConsistentHasher(replicas: Int) {
     removeMachine(getPrimaryFor(new HashKey(new Random().nextInt())))
   }
 
-  private def inRange(hashKey: HashKey, hashRange: HashRange): Boolean =
-    hashKey >= hashRange.minHash && hashKey < hashRange.maxHash
+  def get(hashKey: HashKey): Option[HashValue] = {
+    val first: Option[HashValue] = getReplicas(hashKey)
+                                   .map(_.get(hashKey))
+                                   .collectFirst { case Some(x) => x }
+
+    if (first.isDefined)
+      first
+    else
+      None
+  }
+
+  def addMachine(): Machine = {
+    //println("Adding machine")
+
+    ringCount += 1
+    id += 1
+
+    val newMachine = new Machine("machine-" + id)
+
+    val oldMachines: Iterable[Machine] = primaries.values
+
+    val allMachines = Seq(newMachine) ++ oldMachines
+
+    reassignParitions(allMachines)
+
+    /*
+    For all hash ranges the new machine is told to be a replicant for
+    find the primary for that range, and grab all primary values from them
+     */
+    val newMachineReplicationRanges: mutable.Set[HashRange] = replicants(newMachine)
+
+    newMachineReplicationRanges
+    .foreach(responseRange => {
+      getPrimaryFor(responseRange)
+      .getValuesInHashRange(responseRange)
+      .foreach { case (k, v) => newMachine.add(k, v) }
+    })
+
+    newMachine
+  }
+
+  def put(hashValue: HashValue): HashKey = {
+    val key: HashKey = new HashKey(Math.abs(hashValue.hashCode()))
+
+    getReplicas(key).foreach(_.add(key, hashValue))
+
+    key
+  }
+
+  private def getPrimaryFor(responseRange: HashRange): Machine = {
+    primaries.find { case (range, m) => range == responseRange }.get._2
+  }
 
   private def overlaps(range: HashRange, hashRange: HashRange): Boolean =
     range.minHash >= hashRange.minHash ||
@@ -97,50 +147,8 @@ class ConsistentHasher(replicas: Int) {
     filter.keys.toSeq
   }
 
-  def get(hashKey: HashKey): Option[HashValue] = {
-    val first: Option[HashValue] = getReplicas(hashKey)
-                                   .map(_.get(hashKey))
-                                   .collectFirst { case Some(x) => x }
-
-    if (first.isDefined)
-      first
-    else
-      None
-  }
-
-  def getPrimaryFor(responseRange: HashRange): Machine = {
-    primaries.find { case (range, m) => range == responseRange }.get._2
-  }
-
-  def addMachine(): Machine = {
-    //println("Adding machine")
-
-    ringCount += 1
-    id += 1
-
-    val newMachine = new Machine("machine-" + id)
-
-    val oldMachines: Iterable[Machine] = primaries.values
-
-    val allMachines = Seq(newMachine) ++ oldMachines
-
-    reassignParitions(allMachines)
-
-    /*
-    For all hash ranges the new machine is told to be a replicant for
-    find the primary for that range, and grab all primary values from them
-     */
-    val newMachineReplicationRanges: mutable.Set[HashRange] = replicants(newMachine)
-
-    newMachineReplicationRanges
-    .foreach(responseRange => {
-      getPrimaryFor(responseRange)
-      .getValuesInHashRange(responseRange)
-      .foreach { case (k, v) => newMachine.add(k, v) }
-    })
-
-    newMachine
-  }
+  private def inRange(hashKey: HashKey, hashRange: HashRange): Boolean =
+    hashKey >= hashRange.minHash && hashKey < hashRange.maxHash
 
   private def getRangeForMachine(machine: Machine): HashRange = {
     primaries.find { case (range, m) => m.eq(machine) }.get._1
@@ -205,14 +213,6 @@ class ConsistentHasher(replicas: Int) {
                  machine.keepOnly(Seq(range) ++ replicants(machine))
              }
     .foreach(k => put(k._2))
-  }
-
-  def put(hashValue: HashValue): HashKey = {
-    val key: HashKey = new HashKey(Math.abs(hashValue.hashCode()))
-
-    getReplicas(key).foreach(_.add(key, hashValue))
-
-    key
   }
 
   private def getReplicas(hashKey: HashKey): Seq[Machine] = {
