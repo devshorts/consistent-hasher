@@ -13,7 +13,9 @@ class ConsistentHashTester extends FlatSpec with Matchers {
 
     val foo: HashValue = new HashValue("foo")
 
-    val key: HashKey = hasher.put(foo)
+    val key: HashKey = HashKey.safe(foo.hashCode())
+
+    hasher.put(key, foo)
 
     hasher.get(key).get should equal(foo)
 
@@ -22,8 +24,9 @@ class ConsistentHashTester extends FlatSpec with Matchers {
     hasher.removeMachine(second)
 
     val jizz: HashValue = new HashValue("jizz")
+    val put: HashKey = HashKey.safe(jizz.hashCode())
 
-    val put: HashKey = hasher.put(jizz)
+    hasher.put(put, jizz)
 
     hasher.get(key).get should equal(foo)
     hasher.get(put).get should equal(jizz)
@@ -36,7 +39,9 @@ class ConsistentHashTester extends FlatSpec with Matchers {
 
     val foo: HashValue = new HashValue("foo")
 
-    val key: HashKey = hasher.put(foo)
+    val key: HashKey = HashKey.safe(foo.hashCode())
+
+    hasher.put(key, foo)
 
     Range(0, 10).foreach(i => {
       val added: Int = new Random().nextInt(50) + 1
@@ -45,7 +50,9 @@ class ConsistentHashTester extends FlatSpec with Matchers {
 
       val bar: HashValue = new HashValue(UUID.randomUUID().toString)
 
-      val key2: HashKey = hasher.put(bar)
+      val key2: HashKey = HashKey.safe(bar.hashCode())
+
+      hasher.put(key2 ,bar)
 
       val removeCount: Int = Math.max(1, new Random().nextInt(added - 2))
 

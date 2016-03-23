@@ -10,6 +10,10 @@ case class HashKey(key: Int) extends AnyRef with Ordered[HashKey] {
   override def compare(that: HashKey): Int = key.compare(that.key)
 }
 
+object HashKey{
+  def safe(key : Int) = new HashKey(Math.abs(key))
+}
+
 case class HashRange(minHash: HashKey, maxHash: HashKey) extends Ordered[HashRange] {
   override def compare(that: HashRange): Int = minHash.compare(that.minHash)
 }
@@ -20,31 +24,28 @@ class ConsistentHasher(replicas: Int) {
   private val replicants                             =
     new mutable.HashMap[Machine, mutable.Set[HashRange]]() with mutable.MultiMap[Machine, HashRange]
 
-  private var ringCount: Int = 0
-  private var id       : Int = 0
+  private var id: Int = 0
 
-  def removeMachine(machine: Machine): Unit = {
-    ringCount -= 1
+def removeMachine(machine: Machine): Unit = {
+  val responsibleRange: HashRange = getRangeForMachine(machine)
 
-    val responsibleRange: HashRange = getRangeForMachine(machine)
+  val newMachines = primaries.filter { case (_, m) => !m.eq(machine) }.values.toSeq
 
-    val newMachines = primaries.filter { case (_, m) => !m.eq(machine) }.values.toSeq
+  replicants.remove(machine)
 
-    replicants.remove(machine)
+  reassignParitions(newMachines)
 
-    reassignParitions(newMachines)
+  /*
+  For the ranges the old box covered, ask the secondaries
+  for the values and re-emit them
+   */
+  val secondariesFor: Seq[Machine] = getSecondariesFor(responsibleRange)
 
-    /*
-    For the ranges the old box covered, ask the secondaries
-    for the values and re-emit them
-     */
-    val secondariesFor: Seq[Machine] = getSecondariesFor(responsibleRange)
-
-    secondariesFor
-    .flatMap(_.getValuesInHashRange(responsibleRange))
-    .distinct
-    .foreach { case (k, v) => put(v) }
-  }
+  secondariesFor
+  .flatMap(_.getValuesInHashRange(responsibleRange))
+  .distinct
+  .foreach { case (k, v) => put(k, v) }
+}
 
   def removeRandomMachine(): Unit = {
     removeMachine(getPrimaryFor(new HashKey(new Random().nextInt())))
@@ -63,8 +64,6 @@ class ConsistentHasher(replicas: Int) {
 
   def addMachine(): Machine = {
     //println("Adding machine")
-
-    ringCount += 1
     id += 1
 
     val newMachine = new Machine("machine-" + id)
@@ -91,12 +90,8 @@ class ConsistentHasher(replicas: Int) {
     newMachine
   }
 
-  def put(hashValue: HashValue): HashKey = {
-    val key: HashKey = new HashKey(Math.abs(hashValue.hashCode()))
-
-    getReplicas(key).foreach(_.add(key, hashValue))
-
-    key
+  def put(key: HashKey, value: HashValue) : Unit = {
+    getReplicas(key).foreach(_.add(key, value))
   }
 
   private def getPrimaryFor(responseRange: HashRange): Machine = {
@@ -179,12 +174,13 @@ class ConsistentHasher(replicas: Int) {
     *
     * For any machine that covers a partition it doesn't own anymore
     * re-distribute those messages
+    *
     * @param allMachines
     */
   private def reassignParitions(allMachines: Seq[Machine]): Unit = {
     primaries = primaries.empty
 
-    val newRanges = defineRanges(ringCount)
+    val newRanges = defineRanges(allMachines.size)
 
     val zip: Seq[(HashRange, Machine)] = newRanges
                                          .zip(allMachines)
@@ -212,12 +208,12 @@ class ConsistentHasher(replicas: Int) {
                  // emit the things no longer held here
                  machine.keepOnly(Seq(range) ++ replicants(machine))
              }
-    .foreach(k => put(k._2))
+    .foreach(k => put(k._1, k._2))
   }
 
-  private def getReplicas(hashKey: HashKey): Seq[Machine] = {
-    Seq(getPrimaryFor(hashKey)) ++ getSecondaries(hashKey)
-  }
+private def getReplicas(hashKey: HashKey): Seq[Machine] = {
+  Seq(getPrimaryFor(hashKey)) ++ getSecondaries(hashKey)
+}
 
   private def defineRanges(totalMachines: Int): Seq[HashRange] = {
     val interval = Int.MaxValue / totalMachines
