@@ -11,25 +11,25 @@ class ConsistentHashTester extends FlatSpec with Matchers {
 
     val firstMachine = hasher.addMachine()
 
-    val foo: HashValue = new HashValue("foo")
+    val data1: HashValue = new HashValue("data1")
+    val data1key: HashKey = HashKey.safe(data1.hashCode())
 
-    val key: HashKey = HashKey.safe(foo.hashCode())
+    hasher.put(data1key, data1)
 
-    hasher.put(key, foo)
-
-    hasher.get(key).get should equal(foo)
+    hasher.get(data1key).get should equal(data1)
 
     val second: Machine = hasher.addMachine()
     val third: Machine = hasher.addMachine()
+
     hasher.removeMachine(second)
 
-    val jizz: HashValue = new HashValue("jizz")
-    val put: HashKey = HashKey.safe(jizz.hashCode())
+    val data2: HashValue = new HashValue("data2")
+    val data2key: HashKey = HashKey.safe(data2.hashCode())
 
-    hasher.put(put, jizz)
+    hasher.put(data2key, data2)
 
-    hasher.get(key).get should equal(foo)
-    hasher.get(put).get should equal(jizz)
+    hasher.get(data1key).get should equal(data1)
+    hasher.get(data2key).get should equal(data2)
   }
 
   it should "replicate" in {
