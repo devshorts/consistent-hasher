@@ -3,10 +3,12 @@ package com.example
 import scala.collection.immutable.TreeMap
 
 
-class Machine() {
+class Machine(val id: String) {
   private var map: TreeMap[HashKey, HashValue] = new TreeMap[HashKey, HashValue]()
 
   def add(key: HashKey, value: HashValue): Unit = {
+    //printf("%s; Adding %s -> %s\n", id, key, value)
+
     map = map + (key -> value)
   }
 
@@ -14,7 +16,7 @@ class Machine() {
     map.get(hashKey)
   }
 
-  def getRange(hashRange: HashRange): Seq[(HashKey, HashValue)] ={
+  def getValuesInHashRange(hashRange: HashRange): Seq[(HashKey, HashValue)] ={
     map.range(hashRange.minHash, hashRange.maxHash).toSeq
   }
 
@@ -27,6 +29,8 @@ class Machine() {
     val dropped = map.filter { case (k, v) => !keepOnly.contains(k) }
 
     map = keepOnly
+
+    //printf("%s, Keeping %s, Emitting %s\n", id, map, dropped)
 
     dropped.toSeq
   }
