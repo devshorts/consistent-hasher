@@ -10,8 +10,8 @@ case class HashKey(key: Int) extends AnyRef with Ordered[HashKey] {
   override def compare(that: HashKey): Int = key.compare(that.key)
 }
 
-object HashKey{
-  def safe(key : Int) = new HashKey(Math.abs(key))
+object HashKey {
+  def safe(key: Int) = new HashKey(Math.abs(key))
 }
 
 case class HashRange(minHash: HashKey, maxHash: HashKey) extends Ordered[HashRange] {
@@ -26,26 +26,26 @@ class ConsistentHasher(replicas: Int) {
 
   private var id: Int = 0
 
-def removeMachine(machine: Machine): Unit = {
-  val responsibleRange: HashRange = getRangeForMachine(machine)
+  def removeMachine(machine: Machine): Unit = {
+    val responsibleRange: HashRange = getRangeForMachine(machine)
 
-  val newMachines = primaries.filter { case (_, m) => !m.eq(machine) }.values.toSeq
+    val newMachines = primaries.filter { case (_, m) => !m.eq(machine) }.values.toSeq
 
-  replicants.remove(machine)
+    replicants.remove(machine)
 
-  reassignParitions(newMachines)
+    reassignParitions(newMachines)
 
-  /*
-  For the ranges the old box covered, ask the secondaries
-  for the values and re-emit them
-   */
-  val secondariesFor: Seq[Machine] = getSecondariesFor(responsibleRange)
+    /*
+    For the ranges the old box covered, ask the secondaries
+    for the values and re-emit them
+     */
+    val secondariesFor: Seq[Machine] = getSecondariesFor(responsibleRange)
 
-  secondariesFor
-  .flatMap(_.getValuesInHashRange(responsibleRange))
-  .distinct
-  .foreach { case (k, v) => put(k, v) }
-}
+    secondariesFor
+    .flatMap(_.getValuesInHashRange(responsibleRange))
+    .distinct
+    .foreach { case (k, v) => put(k, v) }
+  }
 
   def removeRandomMachine(): Unit = {
     removeMachine(getPrimaryFor(new HashKey(new Random().nextInt())))
@@ -90,7 +90,7 @@ def removeMachine(machine: Machine): Unit = {
     newMachine
   }
 
-  def put(key: HashKey, value: HashValue) : Unit = {
+  def put(key: HashKey, value: HashValue): Unit = {
     getReplicas(key).foreach(_.add(key, value))
   }
 
@@ -211,9 +211,9 @@ def removeMachine(machine: Machine): Unit = {
     .foreach(k => put(k._1, k._2))
   }
 
-private def getReplicas(hashKey: HashKey): Seq[Machine] = {
-  Seq(getPrimaryFor(hashKey)) ++ getSecondaries(hashKey)
-}
+  private def getReplicas(hashKey: HashKey): Seq[Machine] = {
+    Seq(getPrimaryFor(hashKey)) ++ getSecondaries(hashKey)
+  }
 
   private def defineRanges(totalMachines: Int): Seq[HashRange] = {
     val interval = Int.MaxValue / totalMachines
