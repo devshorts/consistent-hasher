@@ -1,7 +1,5 @@
 package com.example
 
-import scala.collection.immutable.TreeMap
-import scala.collection.mutable
 import scala.util.Random
 
 case class HashValue(value: String) extends AnyRef
@@ -20,48 +18,38 @@ case class HashRange(minHash: HashKey, maxHash: HashKey) extends Ordered[HashRan
 
 class ConsistentHasher[TKey, TValue](replicas: Int) {
 
-  private var primaries: TreeMap[HashRange, Machine[TValue]] = TreeMap()
-  private val replicants                                     =
-    new mutable.HashMap[Machine[TValue], mutable.Set[HashRange]]() with mutable.MultiMap[Machine[TValue], HashRange]
+  private var partitions: Seq[(HashRange, Machine[TValue])] = Seq.empty
 
   private var id: Int = 0
 
   def removeMachine(machine: Machine[TValue]): Unit = {
-    val responsibleRange: HashRange = getRangeForMachine(machine)
+    val remainingMachines = partitions.filter { case (r, m) => !m.eq(machine) }.map(_._2)
 
-    val newMachines = primaries.filter { case (_, m) => !m.eq(machine) }.values.toSeq
+    partitions = getPartitions(remainingMachines.distinct)
 
-    replicants.remove(machine)
-
-    reassignParitions(newMachines)
-
-    /*
-    For the ranges the old box covered, ask the secondaries
-    for the values and re-emit them
-     */
-    val secondariesFor: Seq[Machine[TValue]] = getSecondariesFor(responsibleRange)
-
-    secondariesFor
-    .flatMap(_.getValuesInHashRange(responsibleRange))
-    .distinct
-    .foreach { case (k, v) => put(k, v) }
+    redistribute(partitions)
   }
 
   def removeRandomMachine(): Unit = {
-    removeMachine(getPrimaryFor(new HashKey(new Random().nextInt())))
+    val idx: Int = new Random().nextInt(partitions.size)
+
+    val machineSequence: Seq[Machine[TValue]] = partitions.map(_._2)
+
+    removeMachine(machineSequence(idx))
   }
 
   def get(hashKey: TKey): Option[TValue] = {
     val key = HashKey.safe(hashKey.hashCode())
 
-    val first: Option[TValue] = getReplicas(key)
-                                .map(_.get(key))
-                                .collectFirst { case Some(x) => x }
+    getReplicas(key)
+    .map(_.get(key))
+    .collectFirst { case Some(x) => x }
+  }
 
-    if (first.isDefined)
-      first
-    else
-      None
+  def redistribute(newPartitions: Seq[(HashRange, Machine[TValue])]) = {
+    newPartitions.groupBy { case (range, machine) => machine }
+    .flatMap { case (machine, ranges) => machine.keepOnly(ranges.map(_._1)) }
+    .foreach { case (k, v) => put(k, v) }
   }
 
   def addMachine(): Machine[TValue] = {
@@ -70,25 +58,11 @@ class ConsistentHasher[TKey, TValue](replicas: Int) {
 
     val newMachine = new Machine[TValue]("machine-" + id)
 
-    val oldMachines: Iterable[Machine[TValue]] = primaries.values
+    val oldMachines = partitions.map(_._2).distinct
 
-    val allMachines = Seq(newMachine) ++ oldMachines
+    partitions = getPartitions(Seq(newMachine) ++ oldMachines)
 
-    reassignParitions(allMachines)
-
-    /*
-    For all hash ranges the new machine is told to be a replicant for
-    find the primary for that range, and grab all primary values from them
-     */
-    val newMachineReplicationRanges: mutable.Set[HashRange] = replicants(newMachine)
-
-    for (replicationRange <- newMachineReplicationRanges) {
-      for (primary <- getPrimariesFor(replicationRange)) {
-        for (replicationValue <- primary.getValuesInHashRange(replicationRange)) {
-          newMachine.add(replicationValue._1, replicationValue._2)
-        }
-      }
-    }
+    redistribute(partitions)
 
     newMachine
   }
@@ -103,120 +77,21 @@ class ConsistentHasher[TKey, TValue](replicas: Int) {
     getReplicas(hashkey).foreach(_.add(hashkey, value))
   }
 
-  private def overlaps(range: HashRange, hashRange: HashRange): Boolean =
-    range.minHash >= hashRange.minHash ||
-    range.maxHash < hashRange.maxHash
+  private def getPartitions(machines: Seq[Machine[TValue]]): Seq[(HashRange, Machine[TValue])] = {
+    val replicatedRanges: Seq[HashRange] = Stream.continually(defineRanges(machines.size)).flatten
 
-  private def getPrimariesFor(hashRange: HashRange): Seq[Machine[TValue]] = {
-    primaries
-    .filter {
-              case (range, machine) => overlaps(range, hashRange)
-            }
-    .values.toSeq
-  }
-
-  private def getPrimaryFor(hashKey: HashKey): Machine[TValue] = {
-    var previous: HashRange = primaries.head._1
-    for ((hashRange, value) <- primaries.drop(1)) {
-      if (inRange(hashKey, hashRange)) {
-        return value
-      }
-
-      previous = hashRange
-    }
-
-    primaries.last._2
-  }
-
-  private def getSecondariesFor(range: HashRange): Seq[Machine[TValue]] = {
-    val filter =
-      replicants.filter {
-                          case (machine, ranges) =>
-                            ranges.exists(r => overlaps(r, range))
-                        }
-    filter.keys.toSeq
-  }
-
-  private def getSecondaries(hashKey: HashKey): Seq[Machine[TValue]] = {
-    val filter =
-      replicants.filter {
-                          case (machine, ranges) =>
-                            ranges.exists(inRange(hashKey, _))
-                        }
-
-    filter.keys.toSeq
-  }
-
-  private def inRange(hashKey: HashKey, hashRange: HashRange): Boolean =
-    hashKey >= hashRange.minHash && hashKey < hashRange.maxHash
-
-  private def getRangeForMachine(machine: Machine[TValue]): HashRange = {
-    primaries.find { case (range, m) => m.eq(machine) }.get._1
-  }
-
-  private def getNewSecondaries(machines: Seq[Machine[TValue]]) = {
-    val replicatedRanges: Seq[HashRange] = defineRanges(machines.size * replicas)
-
-    val infiteMachines: Stream[Machine[TValue]] = Stream.continually(machines).flatten
-
-    val newSecondaries =
-      new mutable.HashMap[Machine[TValue], mutable.Set[HashRange]]()
-          with mutable.MultiMap[Machine[TValue], HashRange]
+    val infiteMachines: Stream[Machine[TValue]] = Stream.continually(machines.flatMap(List.fill(replicas)(_))).flatten
 
     replicatedRanges
     .zip(infiteMachines)
-    .foreach {
-               case (range, machine) =>
-                 newSecondaries.addBinding(machine, range)
-             }
-
-    newSecondaries
-  }
-
-  /**
-    * Assign new partitions to machines and assign new secondaries to partitions
-    *
-    * For any machine that covers a partition it doesn't own anymore
-    * re-distribute those messages
-    *
-    * @param allMachines
-    */
-  private def reassignParitions(allMachines: Seq[Machine[TValue]]): Unit = {
-    primaries = primaries.empty
-
-    val newRanges = defineRanges(allMachines.size)
-
-    val machineRangePairs: Seq[(HashRange, Machine[TValue])] = newRanges.zip(allMachines)
-
-    // build the new primary list
-    machineRangePairs
-    .foreach {
-               case (range, machine) =>
-                 primaries = primaries + (range -> machine)
-             }
-
-    replicants.clear()
-
-    // reassign who is responsible for what secondary
-    // and store it in the replications list
-    getNewSecondaries(allMachines).foreach(replicants += _)
-
-    // tell all primaries to drop everything except for whats in their
-    // primary and in their secondary
-    // everything they emit, re-add which should get picked up by
-    // the new primaries and secondaries
-    machineRangePairs
-    .flatMap {
-               case (range, machine) =>
-
-                 // emit the things no longer held here
-                 machine.keepOnly(Seq(range) ++ replicants(machine))
-             }
-    .foreach { case (key, value) => put(key, value) }
+    .take(machines.size * replicas)
+    .toList
   }
 
   private def getReplicas(hashKey: HashKey): Seq[Machine[TValue]] = {
-    Seq(getPrimaryFor(hashKey)) ++ getSecondaries(hashKey)
+    partitions
+    .filter { case (range, machine) => hashKey >= range.minHash && hashKey < range.maxHash }
+    .map(_._2)
   }
 
   private def defineRanges(totalMachines: Int): Seq[HashRange] = {
