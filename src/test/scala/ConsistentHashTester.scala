@@ -33,7 +33,7 @@ class ConsistentHashTester extends FlatSpec with Matchers {
 
     hasher.put("key", "foo")
 
-    Range(0, 10).foreach(i => {
+    Range(0, 50).foreach(i => {
       val added: Int = new Random().nextInt(50) + 1
 
       Range(0, added).foreach(_ => hasher.addMachine())
