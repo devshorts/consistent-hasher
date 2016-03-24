@@ -18,15 +18,15 @@ case class HashRange(minHash: HashKey, maxHash: HashKey) extends Ordered[HashRan
   override def compare(that: HashRange): Int = minHash.compare(that.minHash)
 }
 
-class ConsistentHasher(replicas: Int) {
+class ConsistentHasher[TKey, TValue](replicas: Int) {
 
-  private var primaries: TreeMap[HashRange, Machine] = TreeMap()
-  private val replicants                             =
-    new mutable.HashMap[Machine, mutable.Set[HashRange]]() with mutable.MultiMap[Machine, HashRange]
+  private var primaries: TreeMap[HashRange, Machine[TValue]] = TreeMap()
+  private val replicants                                     =
+    new mutable.HashMap[Machine[TValue], mutable.Set[HashRange]]() with mutable.MultiMap[Machine[TValue], HashRange]
 
   private var id: Int = 0
 
-  def removeMachine(machine: Machine): Unit = {
+  def removeMachine(machine: Machine[TValue]): Unit = {
     val responsibleRange: HashRange = getRangeForMachine(machine)
 
     val newMachines = primaries.filter { case (_, m) => !m.eq(machine) }.values.toSeq
@@ -39,7 +39,7 @@ class ConsistentHasher(replicas: Int) {
     For the ranges the old box covered, ask the secondaries
     for the values and re-emit them
      */
-    val secondariesFor: Seq[Machine] = getSecondariesFor(responsibleRange)
+    val secondariesFor: Seq[Machine[TValue]] = getSecondariesFor(responsibleRange)
 
     secondariesFor
     .flatMap(_.getValuesInHashRange(responsibleRange))
@@ -51,9 +51,11 @@ class ConsistentHasher(replicas: Int) {
     removeMachine(getPrimaryFor(new HashKey(new Random().nextInt())))
   }
 
-  def get(hashKey: HashKey): Option[HashValue] = {
-    val first: Option[HashValue] = getReplicas(hashKey)
-                                   .map(_.get(hashKey))
+  def get(hashKey: TKey): Option[TValue] = {
+    val key = HashKey.safe(hashKey.hashCode())
+
+    val first: Option[TValue] = getReplicas(key)
+                                   .map(_.get(key))
                                    .collectFirst { case Some(x) => x }
 
     if (first.isDefined)
@@ -62,13 +64,13 @@ class ConsistentHasher(replicas: Int) {
       None
   }
 
-  def addMachine(): Machine = {
+  def addMachine(): Machine[TValue] = {
     //println("Adding machine")
     id += 1
 
-    val newMachine = new Machine("machine-" + id)
+    val newMachine = new Machine[TValue]("machine-" + id)
 
-    val oldMachines: Iterable[Machine] = primaries.values
+    val oldMachines: Iterable[Machine[TValue]] = primaries.values
 
     val allMachines = Seq(newMachine) ++ oldMachines
 
@@ -90,11 +92,17 @@ class ConsistentHasher(replicas: Int) {
     newMachine
   }
 
-  def put(key: HashKey, value: HashValue): Unit = {
-    getReplicas(key).foreach(_.add(key, value))
+  def put(key: TKey, value: TValue): Unit = {
+    val hashkey = HashKey.safe(key.hashCode())
+
+    put(hashkey, value)
   }
 
-  private def getPrimaryFor(responseRange: HashRange): Machine = {
+  private def put(hashkey: HashKey, value: TValue): Unit = {
+    getReplicas(hashkey).foreach(_.add(hashkey, value))
+  }
+
+  private def getPrimaryFor(responseRange: HashRange): Machine[TValue] = {
     primaries.find { case (range, m) => range == responseRange }.get._2
   }
 
@@ -102,7 +110,7 @@ class ConsistentHasher(replicas: Int) {
     range.minHash >= hashRange.minHash ||
     range.maxHash < hashRange.maxHash
 
-  private def getPrimariesFor(hashRange: HashRange): Seq[Machine] = {
+  private def getPrimariesFor(hashRange: HashRange): Seq[Machine[TValue]] = {
     primaries
     .filter {
               case (range, machine) => overlaps(range, hashRange)
@@ -110,7 +118,7 @@ class ConsistentHasher(replicas: Int) {
     .values.toSeq
   }
 
-  private def getPrimaryFor(hashKey: HashKey): Machine = {
+  private def getPrimaryFor(hashKey: HashKey): Machine[TValue] = {
     var previous: HashRange = primaries.head._1
     for ((hashRange, value) <- primaries.drop(1)) {
       if (inRange(hashKey, hashRange)) {
@@ -123,7 +131,7 @@ class ConsistentHasher(replicas: Int) {
     primaries.last._2
   }
 
-  private def getSecondariesFor(range: HashRange): Seq[Machine] = {
+  private def getSecondariesFor(range: HashRange): Seq[Machine[TValue]] = {
     val filter =
       replicants.filter {
                           case (machine, ranges) =>
@@ -132,7 +140,7 @@ class ConsistentHasher(replicas: Int) {
     filter.keys.toSeq
   }
 
-  private def getSecondaries(hashKey: HashKey): Seq[Machine] = {
+  private def getSecondaries(hashKey: HashKey): Seq[Machine[TValue]] = {
     val filter =
       replicants.filter {
                           case (machine, ranges) =>
@@ -145,18 +153,20 @@ class ConsistentHasher(replicas: Int) {
   private def inRange(hashKey: HashKey, hashRange: HashRange): Boolean =
     hashKey >= hashRange.minHash && hashKey < hashRange.maxHash
 
-  private def getRangeForMachine(machine: Machine): HashRange = {
+  private def getRangeForMachine(machine: Machine[TValue]): HashRange = {
     primaries.find { case (range, m) => m.eq(machine) }.get._1
   }
 
-  private def getNewSecondaries(machines: Seq[Machine]) = {
+  private def getNewSecondaries(machines: Seq[Machine[TValue]]) = {
     val replicatedRanges: Seq[HashRange] = defineRanges(machines.size).flatMap(Seq.fill(replicas)(_))
 
     val ranges: Stream[HashRange] = Stream.continually(replicatedRanges).flatten
 
-    val infiteMachines: Stream[Machine] = Stream.continually(machines).flatten
+    val infiteMachines: Stream[Machine[TValue]] = Stream.continually(machines).flatten
 
-    val newSecondaries = new mutable.HashMap[Machine, mutable.Set[HashRange]]() with mutable.MultiMap[Machine, HashRange]
+    val newSecondaries =
+      new mutable.HashMap[Machine[TValue], mutable.Set[HashRange]]()
+          with mutable.MultiMap[Machine[TValue], HashRange]
 
     ranges
     .zip(infiteMachines)
@@ -177,12 +187,12 @@ class ConsistentHasher(replicas: Int) {
     *
     * @param allMachines
     */
-  private def reassignParitions(allMachines: Seq[Machine]): Unit = {
+  private def reassignParitions(allMachines: Seq[Machine[TValue]]): Unit = {
     primaries = primaries.empty
 
     val newRanges = defineRanges(allMachines.size)
 
-    val zip: Seq[(HashRange, Machine)] = newRanges
+    val zip: Seq[(HashRange, Machine[TValue])] = newRanges
                                          .zip(allMachines)
 
     // build the new primary list
@@ -211,7 +221,7 @@ class ConsistentHasher(replicas: Int) {
     .foreach(k => put(k._1, k._2))
   }
 
-  private def getReplicas(hashKey: HashKey): Seq[Machine] = {
+  private def getReplicas(hashKey: HashKey): Seq[Machine[TValue]] = {
     Seq(getPrimaryFor(hashKey)) ++ getSecondaries(hashKey)
   }
 
